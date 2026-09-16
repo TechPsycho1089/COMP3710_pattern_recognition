@@ -11,6 +11,9 @@
 # COMP3710 DAWNBench Challenge - ResNet-18 on CIFAR-10
 # ------------------------------------------------------------
 
+# Force instant unbuffered Python print output in Slurm logs
+# export PYTHONUNBUFFERED=1
+
 # Navigate to project directory on Rangpur
 cd $HOME/COMP3710_pattern_recognition/CNN_ResNet-18
 
@@ -18,8 +21,11 @@ cd $HOME/COMP3710_pattern_recognition/CNN_ResNet-18
 source $HOME/miniconda3/bin/activate
 conda activate keras
 
-# Print GPU information
-nvidia-smi
+# Print GPU information if driver path exists
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi
+fi
 
 # Execute the ResNet-18 training script
+echo "Job $SLURM_JOB_ID on $(hostname), started $(date)"
 python resnet18_cifar10.py

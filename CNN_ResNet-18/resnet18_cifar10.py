@@ -25,15 +25,23 @@ DATA_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-MODEL_PATH = MODEL_DIR / "best_resnet18.keras"
-LOG_CSV_PATH = LOG_DIR / "training.csv"
-SUMMARY_JSON_PATH = LOG_DIR / "training_summary.json"
-
 IMAGE_SIZE = (32, 32, 3)
 NUM_CLASSES = 10
-EPOCHS = 28
 BATCH_SIZE = 128
 INITIAL_LR = 0.001
+
+# Check if running in 1-epoch demo mode
+is_demo_mode = len(sys.argv) > 1 and sys.argv[1] in ["--demo", "demo", "1"]
+
+if is_demo_mode:
+    EPOCHS = 1
+    MODEL_PATH = MODEL_DIR / "demo_resnet18.keras"
+    print("\n[DEMO MODE] Running 1-epoch demonstration.")
+    print(f"[DEMO MODE] Checkpoint redirected to: {MODEL_PATH}")
+    print("[DEMO MODE] Your 94%+ model (best_resnet18.keras) is SAFE and untouched!\n")
+else:
+    EPOCHS = 28
+    MODEL_PATH = MODEL_DIR / "best_resnet18.keras"
 
 
 # ============================================================
@@ -52,20 +60,26 @@ except Exception as e:
 # ============================================================
 
 def download_and_extract_cifar10(data_dir: Path):
-    """Downloads and extracts CIFAR-10 into local data/ directory if missing."""
+    """Downloads and extracts CIFAR-10 into local data/ directory if missing or incomplete."""
     cifar_extracted_path = data_dir / "cifar-10-batches-py"
-    tarball_path = data_dir / "cifar-10-python.tar.gz"
 
     if cifar_extracted_path.exists():
-        print(f"Dataset already exists at: {cifar_extracted_path}")
+        print(f"Dataset already extracted at: {cifar_extracted_path}")
         return
 
     url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
     print(f"Downloading CIFAR-10 from {url} into {data_dir}...")
-    
-    urllib.request.urlretrieve(url, tarball_path)
-    print("Download completed. Extracting archive...")
 
+    tarball_path = data_dir / "cifar-10-python.tar.gz"
+    if tarball_path.exists() and tarball_path.stat().st_size < 150 * 1024 * 1024:
+        print("Removing incomplete tarball download...")
+        tarball_path.unlink()
+
+    if not tarball_path.exists():
+        urllib.request.urlretrieve(url, tarball_path)
+        print("Download completed.")
+
+    print("Extracting dataset archive...")
     with tarfile.open(tarball_path, "r:gz") as tar:
         tar.extractall(path=data_dir)
 
@@ -74,13 +88,19 @@ def download_and_extract_cifar10(data_dir: Path):
 
 download_and_extract_cifar10(DATA_DIR)
 
-# Load dataset (using Keras automatic dataset fetcher or pre-downloaded cache)
+# Load dataset
 os.environ["KERAS_HOME"] = str(DATA_DIR)
-(X_train, y_train), (X_test, y_test) = keras.datasets.cifar10.load_data()
+(X_train_full, y_train_full), (X_test, y_test) = keras.datasets.cifar10.load_data()
 
-print(f"\nDataset loaded:")
-print(f"  Train: {X_train.shape}, {y_train.shape}")
-print(f"  Test : {X_test.shape}, {y_test.shape}")
+# Create a 10% validation split from training set (45,000 train, 5,000 val, 10,000 held-out test)
+val_split_idx = int(len(X_train_full) * 0.9)
+X_train, X_val = X_train_full[:val_split_idx], X_train_full[val_split_idx:]
+y_train, y_val = y_train_full[:val_split_idx], y_train_full[val_split_idx:]
+
+print(f"\nDataset loaded & segregated:")
+print(f"  Train      : {X_train.shape}, {y_train.shape}")
+print(f"  Validation : {X_val.shape}, {y_val.shape}")
+print(f"  Held-out Test: {X_test.shape}, {y_test.shape}")
 
 
 # ============================================================
@@ -88,9 +108,11 @@ print(f"  Test : {X_test.shape}, {y_test.shape}")
 # ============================================================
 
 X_train = X_train.astype(np.float32) / 255.0
+X_val = X_val.astype(np.float32) / 255.0
 X_test = X_test.astype(np.float32) / 255.0
 
 y_train = keras.utils.to_categorical(y_train, NUM_CLASSES)
+y_val = keras.utils.to_categorical(y_val, NUM_CLASSES)
 y_test = keras.utils.to_categorical(y_test, NUM_CLASSES)
 
 
@@ -293,11 +315,28 @@ print("\nStarting ResNet-18 training on CIFAR-10...\n")
 history = model.fit(
     X_train,
     y_train,
-    validation_data=(X_test, y_test),
+    validation_data=(X_val, y_val),
     epochs=EPOCHS,
     batch_size=BATCH_SIZE,
     callbacks=callbacks
 )
+
+# ============================================================
+# FINAL EVALUATION ON HELD-OUT UNSEEN TEST SET
+# ============================================================
+
+print("\nEvaluating best model on held-out unseen test set...")
+best_model = keras.models.load_model(MODEL_PATH)
+test_loss, test_acc = best_model.evaluate(X_test, y_test, verbose=1)
+
+print("\n" + "=" * 50)
+print("FINAL TEST EVALUATION (HELD-OUT UNSEEN DATA)")
+print("=" * 50)
+print(f"Test Loss    : {test_loss:.4f}")
+print(f"Test Accuracy: {test_acc * 100:.2f}%")
+if test_acc >= 0.94:
+    print("SUCCESS: Target accuracy >= 94% achieved on unseen test data!")
+print("=" * 50 + "\n")
 
 print(f"Model saved: {MODEL_PATH}")
 print(f"Logs saved : {LOG_CSV_PATH}")
