@@ -1,0 +1,17 @@
+# Dataset storage
+data/
+*.tar.gz
+*.tar
+
+# Model checkpoints & weights
+models/
+*.keras
+*.h5
+*.ckpt
+
+# Logs & temp files
+logs/
+__pycache__/
+*.pyc
+tmp/
+.ipynb_checkpoints/
