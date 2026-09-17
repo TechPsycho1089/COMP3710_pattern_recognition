@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+
+# Datasets & Checkpoints
+*.zip
+*.tar.gz
+*.pth
+*.pt
+lfw-deepfunneled/
+data/
+logs/
+models/
