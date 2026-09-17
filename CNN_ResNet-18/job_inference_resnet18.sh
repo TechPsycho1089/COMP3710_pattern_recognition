@@ -1,17 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=resnet18-cifar10
+#SBATCH --job-name=infer-resnet18
 #SBATCH --partition=comp3710
 #SBATCH --gres=gpu:1
 #SBATCH --mem=16G
 #SBATCH --time=00:05:00
-#SBATCH --output=resnet18_%j.out
-#SBATCH --error=resnet18_%j.err
+#SBATCH --output=infer_resnet18_%j.out
+#SBATCH --error=infer_resnet18_%j.err
 
 # ------------------------------------------------------------
-# COMP3710 DAWNBench Challenge - ResNet-18 on CIFAR-10
+# COMP3710 DAWNBench Challenge - ResNet-18 Inference Job
 # ------------------------------------------------------------
 
-# Force instant unbuffered Python print output in Slurm logs
+# Force instant unbuffered Python print log streaming
 export PYTHONUNBUFFERED=1
 
 # Navigate to project directory on Rangpur
@@ -21,11 +21,11 @@ cd $HOME/COMP3710_pattern_recognition/CNN_ResNet-18
 source $HOME/miniconda3/bin/activate
 conda activate pytorch 2>/dev/null || conda activate keras 2>/dev/null || true
 
-# Print GPU information if driver path exists
+# Print GPU information
 if command -v nvidia-smi &> /dev/null; then
     nvidia-smi
 fi
 
-# Execute the ResNet-18 training script
-echo "Job $SLURM_JOB_ID on $(hostname), started $(date)"
-python resnet18_cifar10.py
+# Execute PyTorch inference script on full 10,000 unseen test set
+echo "Inference job $SLURM_JOB_ID on $(hostname), started $(date)"
+python inference_resnet18.py --eval

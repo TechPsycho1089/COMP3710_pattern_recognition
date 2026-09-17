@@ -44,9 +44,9 @@ is_demo_mode = len(sys.argv) > 1 and sys.argv[1] in ["--demo", "demo", "1"]
 if is_demo_mode:
     EPOCHS = 1
     MODEL_PATH = MODEL_DIR / "demo_resnet18.pth"
-    print("\n[DEMO MODE] Running 1-epoch demonstration.")
-    print(f"[DEMO MODE] Checkpoint redirected to: {MODEL_PATH}")
-    print("[DEMO MODE] Your 94%+ model (best_resnet18.pth) is SAFE and untouched!\n")
+    print("\n[DEMO MODE] Running 1-epoch demonstration.", flush=True)
+    print(f"[DEMO MODE] Checkpoint redirected to: {MODEL_PATH}", flush=True)
+    print("[DEMO MODE] Your 94%+ model (best_resnet18.pth) is SAFE and untouched!\n", flush=True)
 else:
     EPOCHS = 30
     MODEL_PATH = MODEL_DIR / "best_resnet18.pth"
@@ -57,7 +57,7 @@ else:
 # ============================================================
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using PyTorch Device: {device}")
+print(f"Using PyTorch Device: {device}", flush=True)
 
 
 # ============================================================
@@ -66,29 +66,41 @@ print(f"Using PyTorch Device: {device}")
 
 def download_and_extract_cifar10(data_dir: Path):
     """Downloads and extracts CIFAR-10 into local data/ directory if missing."""
+    possible_paths = [
+        data_dir / "cifar-10-batches-py",
+        Path.home() / ".keras" / "datasets" / "cifar-10-batches-py",
+        Path.home() / "COMP3710_pattern_recognition" / "CNN_ResNet-18" / "data" / "cifar-10-batches-py",
+        Path("/tmp/cifar-10-batches-py")
+    ]
+
+    for p in possible_paths:
+        if p.exists() and (p / "data_batch_1").exists():
+            print(f"Dataset already present at: {p}", flush=True)
+            return p
+
     cifar_extracted_path = data_dir / "cifar-10-batches-py"
-
-    if cifar_extracted_path.exists() and (cifar_extracted_path / "data_batch_1").exists():
-        print(f"Dataset already present at: {cifar_extracted_path}")
-        return cifar_extracted_path
-
     url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
-    print(f"Downloading CIFAR-10 from {url} into {data_dir}...")
+    print(f"Downloading CIFAR-10 from {url} into {data_dir}...", flush=True)
 
     tarball_path = data_dir / "cifar-10-python.tar.gz"
     if tarball_path.exists() and tarball_path.stat().st_size < 150 * 1024 * 1024:
-        print("Removing incomplete tarball download...")
+        print("Removing incomplete tarball download...", flush=True)
         tarball_path.unlink()
 
     if not tarball_path.exists():
-        urllib.request.urlretrieve(url, tarball_path)
-        print("Download completed.")
+        try:
+            urllib.request.urlretrieve(url, tarball_path)
+            print("Download completed.", flush=True)
+        except Exception as err:
+            print(f"Error downloading dataset: {err}", flush=True)
+            print("If Rangpur HPC compute nodes lack internet access, download dataset on login node first!", flush=True)
+            raise err
 
-    print("Extracting dataset archive...")
+    print("Extracting dataset archive...", flush=True)
     with tarfile.open(tarball_path, "r:gz") as tar:
         tar.extractall(path=data_dir)
 
-    print(f"Extraction completed: {cifar_extracted_path}")
+    print(f"Extraction completed: {cifar_extracted_path}", flush=True)
     return cifar_extracted_path
 
 
@@ -368,7 +380,8 @@ for epoch in range(1, EPOCHS + 1):
     print(
         f"Epoch {epoch:02d}/{EPOCHS:02d} - duration: {duration:.2f}s"
         f" - loss: {avg_train_loss:.4f} - accuracy: {train_acc:.4f}"
-        f" - val_loss: {avg_val_loss:.4f} - val_accuracy: {val_acc:.4f} {saved_str}"
+        f" - val_loss: {avg_val_loss:.4f} - val_accuracy: {val_acc:.4f} {saved_str}",
+        flush=True
     )
 
 
@@ -386,20 +399,20 @@ summary = {
 with open(SUMMARY_JSON_PATH, "w") as f:
     json.dump(summary, f, indent=4)
 
-print("\n" + "=" * 50)
-print("TRAINING TIMING SUMMARY")
-print("=" * 50)
-print(f"Total Training Time : {total_time:.2f} seconds ({summary['formatted_time']})")
-print(f"Average Epoch Time  : {avg_epoch:.2f} seconds")
-print(f"Epochs Completed    : {len(epoch_times)}")
-print("=" * 50 + "\n")
+print("\n" + "=" * 50, flush=True)
+print("TRAINING TIMING SUMMARY", flush=True)
+print("=" * 50, flush=True)
+print(f"Total Training Time : {total_time:.2f} seconds ({summary['formatted_time']})", flush=True)
+print(f"Average Epoch Time  : {avg_epoch:.2f} seconds", flush=True)
+print(f"Epochs Completed    : {len(epoch_times)}", flush=True)
+print("=" * 50 + "\n", flush=True)
 
 
 # ============================================================
 # FINAL EVALUATION ON HELD-OUT UNSEEN TEST SET (WITH TTA)
 # ============================================================
 
-print("\nEvaluating best saved checkpoint on 10,000 unseen test images with TTA...")
+print("\nEvaluating best saved checkpoint on 10,000 unseen test images with TTA...", flush=True)
 best_model = ResNet18_CIFAR10().to(device)
 best_model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 best_model.eval()
@@ -431,14 +444,14 @@ with torch.no_grad():
 single_acc = (single_correct / total_test) * 100.0
 tta_acc = (tta_correct / total_test) * 100.0
 
-print("\n" + "=" * 50)
-print("FINAL TEST EVALUATION (HELD-OUT UNSEEN DATA)")
-print("=" * 50)
-print(f"Single-Pass Test Accuracy: {single_acc:.2f}%")
-print(f"TTA (Flip) Test Accuracy : {tta_acc:.2f}%")
+print("\n" + "=" * 50, flush=True)
+print("FINAL TEST EVALUATION (HELD-OUT UNSEEN DATA)", flush=True)
+print("=" * 50, flush=True)
+print(f"Single-Pass Test Accuracy: {single_acc:.2f}%", flush=True)
+print(f"TTA (Flip) Test Accuracy : {tta_acc:.2f}%", flush=True)
 if tta_acc >= 94.0:
-    print("SUCCESS: Target accuracy >= 94% achieved on unseen test data!")
-print("=" * 50 + "\n")
+    print("SUCCESS: Target accuracy >= 94% achieved on unseen test data!", flush=True)
+print("=" * 50 + "\n", flush=True)
 
-print(f"Model saved: {MODEL_PATH}")
-print(f"Logs saved : {LOG_CSV_PATH}")
+print(f"Model saved: {MODEL_PATH}", flush=True)
+print(f"Logs saved : {LOG_CSV_PATH}", flush=True)
