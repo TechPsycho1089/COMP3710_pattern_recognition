@@ -9,12 +9,11 @@ Subfolders:
 
 Author: Shekhar "Shakes" Chandra / COMP3710 Team
 
-Multi-GPU Features & Architecture:
+Features & Resiliency:
 - PyTorch VAE with Latent Dimension d = 16.
 - Multi-GPU Parallelization via PyTorch nn.DataParallel across 2 GPUs (comp3710 partition).
 - Dedicated Train, Validation (per-epoch monitoring & best checkpoint saving), and Test loaders.
-- Reparameterization Trick & ELBO Loss (BCE Reconstruction + KL Divergence).
-- UMAP 2D Manifold Projection & Reconstruction Visualization on held-out test set.
+- Flexible Argument Parsing: Accepts both --data_dir and --base_dir.
 """
 
 import os
@@ -58,7 +57,7 @@ class OASISSliceDataset(Dataset):
                     self.image_paths.append(os.path.join(folder_path, f))
             print(f"Loaded {len(self.image_paths)} slices from '{folder_path}'.")
         else:
-            print(f"WARNING: Directory '{folder_path}' not found locally. Using synthetic fallback for local code verification.")
+            print(f"WARNING: Directory '{folder_path}' not found. Using synthetic fallback for local testing.")
 
     def __len__(self):
         if len(self.image_paths) == 0:
@@ -73,7 +72,7 @@ class OASISSliceDataset(Dataset):
                 image = self.transform(image)
             return image
         else:
-            # Fallback synthetic brain slice for local verification
+            # Fallback synthetic brain slice
             np.random.seed(idx)
             img = np.zeros((64, 64), dtype=np.float32)
             y, x = np.ogrid[:64, :64]
@@ -165,7 +164,8 @@ def vae_loss_function(x_recon, x, mu, logvar, beta=1.0):
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-GPU OASIS VAE Training with Validation Set")
-    parser.add_argument("--base_dir", type=str, default="/home/groups/comp3710/OASIS/", help="Base path to OASIS on Rangpur")
+    # Accept both --data_dir and --base_dir to prevent CLI argument mismatch errors
+    parser.add_argument("--data_dir", "--base_dir", dest="data_dir", type=str, default="/home/groups/comp3710/OASIS/", help="Base path to OASIS on Rangpur")
     parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=128, help="Global batch size across GPUs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
@@ -183,9 +183,9 @@ def main():
     print("==================================================================")
 
     # Set up paths for train, validate, and test folders
-    train_path = os.path.join(args.base_dir, "keras_png_slices_train")
-    val_path   = os.path.join(args.base_dir, "keras_png_slices_validate")
-    test_path  = os.path.join(args.base_dir, "keras_png_slices_test")
+    train_path = os.path.join(args.data_dir, "keras_png_slices_train")
+    val_path   = os.path.join(args.data_dir, "keras_png_slices_validate")
+    test_path  = os.path.join(args.data_dir, "keras_png_slices_test")
 
     train_dataset = OASISSliceDataset(folder_path=train_path, transform=transform)
     val_dataset   = OASISSliceDataset(folder_path=val_path, transform=transform)
@@ -317,6 +317,7 @@ def main():
 
     all_mus = np.concatenate(all_mus, axis=0)
 
+    print("Projecting latent space using UMAP...")
     reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
     embedding_2d = reducer.fit_transform(all_mus)
 
