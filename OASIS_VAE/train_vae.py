@@ -308,7 +308,7 @@ def main():
     plt.close()
     print("Saved 'results/oasis_vae_reconstructions.png'")
 
-    # --- UMAP MANIFOLD VISUALIZATION ON TEST SET ---
+    # --- UMAP MANIFOLD VISUALIZATION ON TEST SET (colored by slice position) ---
     print("\nExtracting Test Set Latent Representations for UMAP 2D Manifold...")
     all_mus = []
     with torch.no_grad():
@@ -321,18 +321,31 @@ def main():
 
     all_mus = np.concatenate(all_mus, axis=0)
 
+    # Extract slice numbers from filenames (e.g. "seg_001_slice_10.nii.png" -> 10)
+    import re
+    slice_numbers = []
+    for fpath in test_dataset.image_paths:
+        fname = os.path.basename(fpath)
+        match = re.search(r'slice_(\d+)', fname)
+        slice_numbers.append(int(match.group(1)) if match else 0)
+    slice_numbers = np.array(slice_numbers)
+
     print("Projecting latent space using UMAP...")
     reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
     embedding_2d = reducer.fit_transform(all_mus)
 
-    plt.figure(figsize=(8, 6))
-    plt.scatter(embedding_2d[:, 0], embedding_2d[:, 1], c='purple', alpha=0.6, edgecolors='none', s=20)
+    plt.figure(figsize=(10, 7))
+    scatter = plt.scatter(embedding_2d[:, 0], embedding_2d[:, 1],
+                          c=slice_numbers, cmap='viridis', alpha=0.6,
+                          edgecolors='none', s=20)
+    cbar = plt.colorbar(scatter)
+    cbar.set_label("Slice Position (axial)")
     plt.title("UMAP 2D Projection of OASIS Test Set Latent Manifold (d=16 VAE)")
     plt.xlabel("UMAP Dimension 1")
     plt.ylabel("UMAP Dimension 2")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig("results/oasis_vae_umap.png")
+    plt.savefig("results/oasis_vae_umap.png", dpi=150)
     plt.close()
     print("Saved 'results/oasis_vae_umap.png'")
     print("All tasks completed successfully!")
