@@ -221,7 +221,7 @@ def main():
     warmup_epochs = 10  # KL warm-up: beta ramps 0 -> 1 over first 10 epochs
 
     for epoch in range(1, args.epochs + 1):
-        beta = min(1.0, epoch / warmup_epochs)
+        beta = min(4.0, 4.0 * epoch / warmup_epochs)
 
         # --- TRAIN PHASE ---
         vae_model.train()
