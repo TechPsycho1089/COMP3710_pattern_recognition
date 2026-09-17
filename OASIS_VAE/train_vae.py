@@ -218,7 +218,11 @@ def main():
     print(f"\nStarting training for {args.epochs} epochs (Batch Size: {args.batch_size}, Latent Dim: {args.latent_dim})...\n")
     start_time = time.time()
 
+    warmup_epochs = 10  # KL warm-up: beta ramps 0 -> 1 over first 10 epochs
+
     for epoch in range(1, args.epochs + 1):
+        beta = min(1.0, epoch / warmup_epochs)
+
         # --- TRAIN PHASE ---
         vae_model.train()
         train_loss = 0.0
@@ -233,7 +237,7 @@ def main():
             optimizer.zero_grad()
             recon_batch, mu, logvar = vae_model(data)
 
-            loss, recon, kld = vae_loss_function(recon_batch, data, mu, logvar)
+            loss, recon, kld = vae_loss_function(recon_batch, data, mu, logvar, beta=beta)
             loss.backward()
             optimizer.step()
 
@@ -256,7 +260,7 @@ def main():
                 data = data.to(device)
 
                 recon_batch, mu, logvar = vae_model(data)
-                loss, recon, kld = vae_loss_function(recon_batch, data, mu, logvar)
+                loss, recon, kld = vae_loss_function(recon_batch, data, mu, logvar, beta=beta)
 
                 val_loss += loss.item()
                 val_recon += recon.item()
@@ -264,7 +268,7 @@ def main():
 
         avg_val_loss = val_loss / len(val_dataset)
 
-        print(f"Epoch [{epoch:02d}/{args.epochs:02d}] | Train Loss: {avg_train_loss:.2f} | Val Loss: {avg_val_loss:.2f} | Val BCE: {val_recon/len(val_dataset):.2f} | Val KLD: {val_kld/len(val_dataset):.2f}")
+        print(f"Epoch [{epoch:02d}/{args.epochs:02d}] | β: {beta:.2f} | Train Loss: {avg_train_loss:.2f} | Val Loss: {avg_val_loss:.2f} | Val BCE: {val_recon/len(val_dataset):.2f} | Val KLD: {val_kld/len(val_dataset):.2f}")
 
         # Save Best Checkpoint
         if avg_val_loss < best_val_loss:
