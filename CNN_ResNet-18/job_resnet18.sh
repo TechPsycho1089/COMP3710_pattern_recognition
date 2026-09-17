@@ -17,9 +17,9 @@
 # Navigate to project directory on Rangpur
 cd $HOME/COMP3710_pattern_recognition/CNN_ResNet-18
 
-# Activate your conda environment
+# Activate conda environment with PyTorch installed
 source $HOME/miniconda3/bin/activate
-conda activate keras
+conda activate pytorch 2>/dev/null || conda activate keras 2>/dev/null || true
 
 # Print GPU information if driver path exists
 if command -v nvidia-smi &> /dev/null; then

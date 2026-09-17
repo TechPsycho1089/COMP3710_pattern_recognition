@@ -1,15 +1,20 @@
 import csv
 import json
 import os
+import pickle
+import sys
 import tarfile
 import time
 import urllib.request
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
-import keras
-from keras import layers
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import torchvision.transforms as T
 
 
 # ============================================================
@@ -25,34 +30,34 @@ DATA_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
+LOG_CSV_PATH = LOG_DIR / "training_log.csv"
+SUMMARY_JSON_PATH = LOG_DIR / "timing_summary.json"
+
 IMAGE_SIZE = (32, 32, 3)
 NUM_CLASSES = 10
 BATCH_SIZE = 128
-INITIAL_LR = 0.001
+MAX_LR = 0.14
 
 # Check if running in 1-epoch demo mode
 is_demo_mode = len(sys.argv) > 1 and sys.argv[1] in ["--demo", "demo", "1"]
 
 if is_demo_mode:
     EPOCHS = 1
-    MODEL_PATH = MODEL_DIR / "demo_resnet18.keras"
+    MODEL_PATH = MODEL_DIR / "demo_resnet18.pth"
     print("\n[DEMO MODE] Running 1-epoch demonstration.")
     print(f"[DEMO MODE] Checkpoint redirected to: {MODEL_PATH}")
-    print("[DEMO MODE] Your 94%+ model (best_resnet18.keras) is SAFE and untouched!\n")
+    print("[DEMO MODE] Your 94%+ model (best_resnet18.pth) is SAFE and untouched!\n")
 else:
-    EPOCHS = 28
-    MODEL_PATH = MODEL_DIR / "best_resnet18.keras"
+    EPOCHS = 30
+    MODEL_PATH = MODEL_DIR / "best_resnet18.pth"
 
 
 # ============================================================
-# ENABLE MIXED PRECISION (NVIDIA A100 TENSOR CORES SPEEDUP)
+# DEVICE SELECTION (CUDA GPU vs CPU)
 # ============================================================
 
-try:
-    keras.mixed_precision.set_global_policy("mixed_float16")
-    print("Mixed precision policy set to 'mixed_float16'.")
-except Exception as e:
-    print(f"Warning: Mixed precision initialization skipped: {e}")
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using PyTorch Device: {device}")
 
 
 # ============================================================
@@ -60,12 +65,12 @@ except Exception as e:
 # ============================================================
 
 def download_and_extract_cifar10(data_dir: Path):
-    """Downloads and extracts CIFAR-10 into local data/ directory if missing or incomplete."""
+    """Downloads and extracts CIFAR-10 into local data/ directory if missing."""
     cifar_extracted_path = data_dir / "cifar-10-batches-py"
 
-    if cifar_extracted_path.exists():
-        print(f"Dataset already extracted at: {cifar_extracted_path}")
-        return
+    if cifar_extracted_path.exists() and (cifar_extracted_path / "data_batch_1").exists():
+        print(f"Dataset already present at: {cifar_extracted_path}")
+        return cifar_extracted_path
 
     url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
     print(f"Downloading CIFAR-10 from {url} into {data_dir}...")
@@ -84,257 +89,354 @@ def download_and_extract_cifar10(data_dir: Path):
         tar.extractall(path=data_dir)
 
     print(f"Extraction completed: {cifar_extracted_path}")
+    return cifar_extracted_path
 
 
-download_and_extract_cifar10(DATA_DIR)
+cifar_dir = download_and_extract_cifar10(DATA_DIR)
 
-# Load dataset
-os.environ["KERAS_HOME"] = str(DATA_DIR)
-(X_train_full, y_train_full), (X_test, y_test) = keras.datasets.cifar10.load_data()
 
-# Create a 10% validation split from training set (45,000 train, 5,000 val, 10,000 held-out test)
-val_split_idx = int(len(X_train_full) * 0.9)
-X_train, X_val = X_train_full[:val_split_idx], X_train_full[val_split_idx:]
-y_train, y_val = y_train_full[:val_split_idx], y_train_full[val_split_idx:]
+def load_cifar10_from_dir(cifar_dir: Path):
+    """Loads CIFAR-10 raw numpy arrays directly from pickle batch files."""
+    train_x, train_y = [], []
+    for i in range(1, 6):
+        batch_path = cifar_dir / f"data_batch_{i}"
+        with open(batch_path, 'rb') as f:
+            entry = pickle.load(f, encoding='latin1')
+            train_x.append(entry['data'])
+            train_y.extend(entry['labels'])
+
+    train_x = np.vstack(train_x).reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+    train_y = np.array(train_y)
+
+    test_path = cifar_dir / "test_batch"
+    with open(test_path, 'rb') as f:
+        entry = pickle.load(f, encoding='latin1')
+        test_x = entry['data'].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+        test_y = np.array(entry['labels'])
+
+    return (train_x, train_y), (test_x, test_y)
+
+
+(X_train_full, y_train_full), (X_test, y_test) = load_cifar10_from_dir(cifar_dir)
+
+# 3-Way Segregation: 45,000 Train, 5,000 Validation, 10,000 Unseen Held-out Test
+val_split = 45000
+X_train, X_val = X_train_full[:val_split], X_train_full[val_split:]
+y_train, y_val = y_train_full[:val_split], y_train_full[val_split:]
+
+# Convert to PyTorch Tensors (NCHW Format: [Batch, Channels, Height, Width], range [0, 1])
+t_X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+t_y_train = torch.tensor(y_train, dtype=torch.long).squeeze()
+
+t_X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+t_y_val = torch.tensor(y_val, dtype=torch.long).squeeze()
+
+t_X_test = torch.tensor(X_test, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+t_y_test = torch.tensor(y_test, dtype=torch.long).squeeze()
+
+train_loader = DataLoader(TensorDataset(t_X_train, t_y_train), batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(TensorDataset(t_X_val, t_y_val), batch_size=BATCH_SIZE, shuffle=False)
+test_loader = DataLoader(TensorDataset(t_X_test, t_y_test), batch_size=BATCH_SIZE, shuffle=False)
 
 print(f"\nDataset loaded & segregated:")
-print(f"  Train      : {X_train.shape}, {y_train.shape}")
-print(f"  Validation : {X_val.shape}, {y_val.shape}")
-print(f"  Held-out Test: {X_test.shape}, {y_test.shape}")
+print(f"  Train Set      : {t_X_train.shape}, {t_y_train.shape}")
+print(f"  Validation Set : {t_X_val.shape}, {t_y_val.shape}")
+print(f"  Held-out Test  : {t_X_test.shape}, {t_y_test.shape}\n")
 
 
 # ============================================================
-# PREPROCESSING & ONE-HOT ENCODING
+# FAST PYTORCH GPU DATA AUGMENTATION & CUTOUT
 # ============================================================
 
-X_train = X_train.astype(np.float32) / 255.0
-X_val = X_val.astype(np.float32) / 255.0
-X_test = X_test.astype(np.float32) / 255.0
+mean = (0.4914, 0.4822, 0.4465)
+std = (0.2470, 0.2435, 0.2616)
 
-y_train = keras.utils.to_categorical(y_train, NUM_CLASSES)
-y_val = keras.utils.to_categorical(y_val, NUM_CLASSES)
-y_test = keras.utils.to_categorical(y_test, NUM_CLASSES)
+train_transform = T.Compose([
+    T.RandomCrop(32, padding=4, padding_mode='reflect'),
+    T.RandomHorizontalFlip(),
+    T.Normalize(mean, std),
+    T.RandomErasing(p=0.5, scale=(0.1, 0.25), ratio=(1.0, 1.0), value=0)  # Cutout
+])
 
-
-# ============================================================
-# HIGH-RESOLUTION EXECUTION TIMING CALLBACK
-# ============================================================
-
-class TimingCallback(keras.callbacks.Callback):
-    """Tracks per-epoch execution duration and total wall-clock training time."""
-    def __init__(self, csv_path):
-        super().__init__()
-        self.csv_path = csv_path
-        self.epoch_times = []
-        self.train_start_time = 0
-
-    def on_train_begin(self, logs=None):
-        self.train_start_time = time.perf_counter()
-        with open(self.csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "epoch",
-                "epoch_duration_sec",
-                "train_loss",
-                "train_accuracy",
-                "val_loss",
-                "val_accuracy"
-            ])
-
-    def on_epoch_begin(self, epoch, logs=None):
-        self.epoch_start = time.perf_counter()
-
-    def on_epoch_end(self, epoch, logs=None):
-        duration = time.perf_counter() - self.epoch_start
-        self.epoch_times.append(duration)
-
-        logs = logs or {}
-        train_loss = logs.get("loss", 0.0)
-        train_acc = logs.get("accuracy", 0.0)
-        val_loss = logs.get("val_loss", 0.0)
-        val_acc = logs.get("val_accuracy", 0.0)
-
-        with open(self.csv_path, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                epoch + 1,
-                f"{duration:.2f}",
-                f"{train_loss:.4f}",
-                f"{train_acc:.4f}",
-                f"{val_loss:.4f}",
-                f"{val_acc:.4f}"
-            ])
-
-        print(
-            f" - duration: {duration:.2f}s"
-            f" - val_loss: {val_loss:.4f}"
-            f" - val_accuracy: {val_acc:.4f}"
-        )
-
-    def on_train_end(self, logs=None):
-        total_time = time.perf_counter() - self.train_start_time
-        mins, secs = divmod(total_time, 60)
-        avg_epoch = np.mean(self.epoch_times) if self.epoch_times else 0.0
-
-        summary = {
-            "total_seconds": round(total_time, 2),
-            "formatted_time": f"{int(mins):02d}:{secs:05.2f}",
-            "avg_epoch_seconds": round(avg_epoch, 2),
-            "epochs_completed": len(self.epoch_times)
-        }
-
-        with open(SUMMARY_JSON_PATH, "w") as f:
-            json.dump(summary, f, indent=4)
-
-        print("\n" + "=" * 50)
-        print("TRAINING TIMING SUMMARY")
-        print("=" * 50)
-        print(f"Total Training Time : {total_time:.2f} seconds ({summary['formatted_time']})")
-        print(f"Average Epoch Time  : {avg_epoch:.2f} seconds")
-        print(f"Epochs Completed    : {len(self.epoch_times)}")
-        print("=" * 50 + "\n")
+eval_transform = T.Compose([
+    T.Normalize(mean, std)
+])
 
 
 # ============================================================
-# RESNET-18 MODEL ARCHITECTURE (CIFAR-10 ADAPTED)
+# PYTORCH RESNET-18 ARCHITECTURE (CIFAR-10 ADAPTED)
 # ============================================================
 
-def basic_block(x, filters, stride=1):
-    """Standard ResNet-18 Basic Residual Block with shortcut addition."""
-    shortcut = x
+class BasicBlock(nn.Module):
+    expansion = 1
 
-    # First convolution in block
-    x = layers.Conv2D(
-        filters, kernel_size=3, strides=stride, padding="same", use_bias=False
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
 
-    # Second convolution in block
-    x = layers.Conv2D(
-        filters, kernel_size=3, strides=1, padding="same", use_bias=False
-    )(x)
-    x = layers.BatchNormalization()(x)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
 
-    # Projection shortcut if dimensions or filter counts change
-    if stride != 1 or shortcut.shape[-1] != filters:
-        shortcut = layers.Conv2D(
-            filters, kernel_size=1, strides=stride, padding="same", use_bias=False
-        )(shortcut)
-        shortcut = layers.BatchNormalization()(shortcut)
-
-    # Residual Addition (Skip Connection)
-    x = layers.add([x, shortcut])
-    x = layers.ReLU()(x)
-    return x
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
 
 
-def build_resnet18(input_shape=(32, 32, 3), num_classes=10):
-    """Builds full ResNet-18 model with residual skip connections."""
-    inputs = layers.Input(shape=input_shape)
+class ResNet18_CIFAR10(nn.Module):
+    def __init__(self, num_classes=10):
+        super(ResNet18_CIFAR10, self).__init__()
+        self.in_planes = 64
 
-    # Data Augmentation Block
-    data_aug = keras.Sequential([
-        layers.RandomFlip("horizontal"),
-        layers.RandomTranslation(0.1, 0.1),
-        layers.RandomZoom(0.1),
-    ], name="data_augmentation")(inputs)
+        # CIFAR-10 Stem: 3x3 Conv, Stride 1, Padding 1 (NO Stem MaxPool!)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
 
-    # Stem: 3x3 Conv, stride 1, padding same (No Stem MaxPool for CIFAR-10 32x32)
-    x = layers.Conv2D(64, kernel_size=3, strides=1, padding="same", use_bias=False)(data_aug)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
+        self.layer1 = self._make_layer(BasicBlock, 64, 2, stride=1)
+        self.layer2 = self._make_layer(BasicBlock, 128, 2, stride=2)
+        self.layer3 = self._make_layer(BasicBlock, 256, 2, stride=2)
+        self.layer4 = self._make_layer(BasicBlock, 512, 2, stride=2)
 
-    # Stage 1: 2 blocks, 64 filters, stride 1 (32x32)
-    x = basic_block(x, filters=64, stride=1)
-    x = basic_block(x, filters=64, stride=1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(512 * BasicBlock.expansion, num_classes)
 
-    # Stage 2: 2 blocks, 128 filters, stride 2 (16x16)
-    x = basic_block(x, filters=128, stride=2)
-    x = basic_block(x, filters=128, stride=1)
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers_list = []
+        for s in strides:
+            layers_list.append(block(self.in_planes, planes, s))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers_list)
 
-    # Stage 3: 2 blocks, 256 filters, stride 2 (8x8)
-    x = basic_block(x, filters=256, stride=2)
-    x = basic_block(x, filters=256, stride=1)
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
 
-    # Stage 4: 2 blocks, 512 filters, stride 2 (4x4)
-    x = basic_block(x, filters=512, stride=2)
-    x = basic_block(x, filters=512, stride=1)
 
-    # Global Average Pooling & Output Dense Head
-    x = layers.GlobalAveragePooling2D()(x)
-    outputs = layers.Dense(num_classes, activation="softmax", dtype="float32")(x)
-
-    model = keras.Model(inputs=inputs, outputs=outputs, name="ResNet18_CIFAR10")
-    return model
+model = ResNet18_CIFAR10().to(device)
 
 
 # ============================================================
-# MODEL COMPILED & TRAINED
+# OPTIMIZER, SCHEDULER & PYTORCH AMP
 # ============================================================
 
-model = build_resnet18(input_shape=IMAGE_SIZE, num_classes=NUM_CLASSES)
-model.summary()
-
-total_steps = (len(X_train) // BATCH_SIZE) * EPOCHS
-
-lr_schedule = keras.optimizers.schedules.CosineDecay(
-    initial_learning_rate=INITIAL_LR,
-    decay_steps=total_steps,
-    alpha=0.01
+optimizer = optim.SGD(
+    model.parameters(),
+    lr=MAX_LR,
+    momentum=0.9,
+    weight_decay=5e-4,
+    nesterov=True
 )
 
-optimizer = keras.optimizers.AdamW(
-    learning_rate=lr_schedule,
-    weight_decay=1e-4
-)
-
-model.compile(
-    optimizer=optimizer,
-    loss="categorical_crossentropy",
-    metrics=["accuracy"]
-)
-
-
-# ============================================================
-# CALLBACKS & FIT
-# ============================================================
-
-callbacks = [
-    keras.callbacks.ModelCheckpoint(
-        MODEL_PATH,
-        monitor="val_accuracy",
-        save_best_only=True,
-        verbose=1
-    ),
-    TimingCallback(LOG_CSV_PATH)
-]
-
-print("\nStarting ResNet-18 training on CIFAR-10...\n")
-
-history = model.fit(
-    X_train,
-    y_train,
-    validation_data=(X_val, y_val),
+scheduler = optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=MAX_LR,
+    steps_per_epoch=len(train_loader),
     epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    callbacks=callbacks
+    pct_start=0.2,
+    div_factor=25.0,
+    final_div_factor=1000.0
 )
 
+criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+use_amp = (device.type == 'cuda')
+scaler = torch.amp.GradScaler('cuda') if use_amp else None
+
+
 # ============================================================
-# FINAL EVALUATION ON HELD-OUT UNSEEN TEST SET
+# EXECUTION TIMING & LOGGING TRACKER
 # ============================================================
 
-print("\nEvaluating best model on held-out unseen test set...")
-best_model = keras.models.load_model(MODEL_PATH)
-test_loss, test_acc = best_model.evaluate(X_test, y_test, verbose=1)
+epoch_times = []
+train_start_time = time.perf_counter()
+
+with open(LOG_CSV_PATH, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow([
+        "epoch",
+        "epoch_duration_sec",
+        "train_loss",
+        "train_accuracy",
+        "val_loss",
+        "val_accuracy"
+    ])
+
+print("\nStarting ResNet-18 DAWNBench PyTorch GPU Training...\n")
+
+best_val_acc = 0.0
+
+for epoch in range(1, EPOCHS + 1):
+    epoch_start = time.perf_counter()
+
+    # Training Pass
+    model.train()
+    train_loss, train_correct, total_train = 0.0, 0, 0
+
+    for inputs, targets in train_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+        inputs = train_transform(inputs)
+
+        optimizer.zero_grad()
+
+        if use_amp:
+            with torch.amp.autocast('cuda'):
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+
+        scheduler.step()
+
+        train_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        total_train += targets.size(0)
+        train_correct += predicted.eq(targets).sum().item()
+
+    train_acc = train_correct / total_train
+    avg_train_loss = train_loss / total_train
+
+    # Validation Pass
+    model.eval()
+    val_loss, val_correct, total_val = 0.0, 0, 0
+
+    with torch.no_grad():
+        for inputs, targets in val_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            inputs = eval_transform(inputs)
+
+            if use_amp:
+                with torch.amp.autocast('cuda'):
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+            else:
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+
+            val_loss += loss.item() * inputs.size(0)
+            _, predicted = outputs.max(1)
+            total_val += targets.size(0)
+            val_correct += predicted.eq(targets).sum().item()
+
+    val_acc = val_correct / total_val
+    avg_val_loss = val_loss / total_val
+
+    duration = time.perf_counter() - epoch_start
+    epoch_times.append(duration)
+
+    # Save Best Checkpoint
+    saved_str = ""
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
+        torch.save(model.state_dict(), MODEL_PATH)
+        saved_str = f"[Saved best checkpoint to {MODEL_PATH}]"
+
+    # Log to CSV
+    with open(LOG_CSV_PATH, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            epoch,
+            f"{duration:.2f}",
+            f"{avg_train_loss:.4f}",
+            f"{train_acc:.4f}",
+            f"{avg_val_loss:.4f}",
+            f"{val_acc:.4f}"
+        ])
+
+    print(
+        f"Epoch {epoch:02d}/{EPOCHS:02d} - duration: {duration:.2f}s"
+        f" - loss: {avg_train_loss:.4f} - accuracy: {train_acc:.4f}"
+        f" - val_loss: {avg_val_loss:.4f} - val_accuracy: {val_acc:.4f} {saved_str}"
+    )
+
+
+total_time = time.perf_counter() - train_start_time
+mins, secs = divmod(total_time, 60)
+avg_epoch = np.mean(epoch_times) if epoch_times else 0.0
+
+summary = {
+    "total_seconds": round(total_time, 2),
+    "formatted_time": f"{int(mins):02d}:{secs:05.2f}",
+    "avg_epoch_seconds": round(avg_epoch, 2),
+    "epochs_completed": len(epoch_times)
+}
+
+with open(SUMMARY_JSON_PATH, "w") as f:
+    json.dump(summary, f, indent=4)
+
+print("\n" + "=" * 50)
+print("TRAINING TIMING SUMMARY")
+print("=" * 50)
+print(f"Total Training Time : {total_time:.2f} seconds ({summary['formatted_time']})")
+print(f"Average Epoch Time  : {avg_epoch:.2f} seconds")
+print(f"Epochs Completed    : {len(epoch_times)}")
+print("=" * 50 + "\n")
+
+
+# ============================================================
+# FINAL EVALUATION ON HELD-OUT UNSEEN TEST SET (WITH TTA)
+# ============================================================
+
+print("\nEvaluating best saved checkpoint on 10,000 unseen test images with TTA...")
+best_model = ResNet18_CIFAR10().to(device)
+best_model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+best_model.eval()
+
+single_correct, tta_correct, total_test = 0, 0, 0
+
+with torch.no_grad():
+    for inputs, targets in test_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+
+        # Pass 1: Original test images
+        norm_orig = eval_transform(inputs)
+        out_orig = torch.softmax(best_model(norm_orig), dim=1)
+
+        # Pass 2: Horizontally flipped test images (TTA)
+        norm_flip = eval_transform(torch.flip(inputs, dims=[3]))
+        out_flip = torch.softmax(best_model(norm_flip), dim=1)
+
+        # Average probabilities for TTA
+        out_tta = (out_orig + out_flip) / 2.0
+
+        _, pred_single = out_orig.max(1)
+        _, pred_tta = out_tta.max(1)
+
+        total_test += targets.size(0)
+        single_correct += pred_single.eq(targets).sum().item()
+        tta_correct += pred_tta.eq(targets).sum().item()
+
+single_acc = (single_correct / total_test) * 100.0
+tta_acc = (tta_correct / total_test) * 100.0
 
 print("\n" + "=" * 50)
 print("FINAL TEST EVALUATION (HELD-OUT UNSEEN DATA)")
 print("=" * 50)
-print(f"Test Loss    : {test_loss:.4f}")
-print(f"Test Accuracy: {test_acc * 100:.2f}%")
-if test_acc >= 0.94:
+print(f"Single-Pass Test Accuracy: {single_acc:.2f}%")
+print(f"TTA (Flip) Test Accuracy : {tta_acc:.2f}%")
+if tta_acc >= 94.0:
     print("SUCCESS: Target accuracy >= 94% achieved on unseen test data!")
 print("=" * 50 + "\n")
 
