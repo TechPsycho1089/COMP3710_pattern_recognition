@@ -1,6 +1,6 @@
 # Task 4.2 / 4.4: Multi-GPU Variational Autoencoder (VAE) on OASIS Brain MRI
 
-**Author:** Shekhar "Shakes" Chandra / COMP3710 Team  
+**Author:** Harshit Aggarwal  
 **Dataset Base Path:** `/home/groups/comp3710/OASIS/` (Rangpur HPC Cluster)  
 **Target Architecture:** Multi-GPU PyTorch VAE ($d=16$) with `nn.DataParallel` across 2 GPUs (`partition=comp3710`)
 

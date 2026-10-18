@@ -1,6 +1,7 @@
 # COMP3710 Pattern Recognition - Demonstration & Recognition Portfolio
 
-**Author:** Shekhar "Shakes" Chandra / COMP3710 Student Portfolio  
+**Author:** Harshit Aggarwal  
+**Course staff:** Shekhar "Shakes" Chandra (course coordinator, task specifications)  
 **Course:** COMP3710 - Pattern Analysis (The University of Queensland)  
 **Frameworks:** PyTorch, Scikit-Learn, NumPy, Matplotlib, UMAP
 
@@ -8,15 +9,10 @@
 
 ## Repository Architecture
 
-This repository contains the complete implementation across all four parts of **Lab Demonstration 2**:
+This repository contains my implementations of Parts 3 and 4 of **Lab Demonstration 2**:
 
 ```text
 COMP3710_pattern_recognition/
-├── Part1_DFT/
-│   ├── part1_dft.py               # Fourier square wave & PyTorch GPU/CPU matrix DFT
-│   └── time_vector_demo.py        # In-depth time vector & endpoint=False demonstration
-├── Part2_Eigenfaces/
-│   └── part2_eigenfaces.py        # SVD PCA face space & Random Forest classifier
 ├── CNN/                           # Part 3.1: 2-Layer CNN on LFW Face Dataset
 │   ├── train.py                   # PyTorch CNN training pipeline
 │   ├── inference.py               # Evaluation & test inference script
@@ -37,10 +33,8 @@ COMP3710_pattern_recognition/
 
 | Section | Topic | Key Implementation | Metrics & Highlights |
 | :--- | :--- | :--- | :--- |
-| **Part 1** | **Discrete Fourier Transform** | Fourier series square wave, PyTorch $O(N^2)$ Tensor Matrix DFT ($W \cdot x$) vs $O(N \log N)$ FFT | Numerical correctness verified (`np.allclose` = `True`). Benchmarked vector speedups across $N$. |
-| **Part 2** | **Eigenfaces & PCA** | SVD Eigen-decomposition ($150$ components), Compactness plot, Random Forest | Captured **94.65%** variance while compressing dimensions by 92%. Classifier accuracy: **65.53%**. |
-| **Part 3.1**| **CNN Classifier** | 2-Layer Conv2D ($3\times3$, 32 filters) with Adam & Cross-Entropy on LFW | End-to-end representation learning outperforming classical PCA + Random Forest. |
-| **Part 3.2**| **DAWNBench ResNet-18** | Fast CIFAR-10 training with ResNet-18, PyTorch AMP (Mixed Precision) | **>90% accuracy** in under 30 minutes on Rangpur HPC cluster. |
+| **Part 3.1**| **CNN Classifier** | 2-Layer Conv2D ($3\times3$, 32 filters) with Adam & Cross-Entropy on LFW | End-to-end representation learning on the LFW face dataset. |
+| **Part 3.2**| **DAWNBench ResNet-18** | Fast CIFAR-10 training with ResNet-18, PyTorch AMP (Mixed Precision) | **>94% test accuracy** on CIFAR-10, trained on the Rangpur HPC GPU cluster. |
 | **Part 4** | **OASIS Brain VAE & Git** | PyTorch VAE, Reparameterization Trick, ELBO Loss, UMAP 2D Manifold Plot | Decoded continuous 2D manifold of brain MRI slices. Clean Git commit workflow. |
 
 ---
@@ -49,7 +43,7 @@ COMP3710_pattern_recognition/
 
 1. **Clone the Repository:**
    ```bash
-   git clone https://github.com/your-username/COMP3710_pattern_recognition.git
+   git clone https://github.com/TechPsycho1089/COMP3710_pattern_recognition.git
    cd COMP3710_pattern_recognition
    ```
 
@@ -60,8 +54,9 @@ COMP3710_pattern_recognition/
    pip install torch torchvision numpy matplotlib scikit-learn scipy umap-learn
    ```
 
-3. **Running Tasks:**
-   * **Part 1 DFT:** `python Part1_DFT/part1_dft.py`
-   * **Part 2 Eigenfaces:** `python Part2_Eigenfaces/part2_eigenfaces.py`
-   * **Part 3 CNN:** `python CNN/train.py`
+3. **Download the LFW dataset** (not stored in this repo): download `lfw-deepfunneled` from the [LFW website](http://vis-www.cs.umass.edu/lfw/) and extract it into `CNN/lfw-deepfunneled/`. CIFAR-10 downloads automatically through `torchvision`; the OASIS data lives on the Rangpur cluster.
+
+4. **Running Tasks:**
+   * **Part 3.1 CNN:** `python CNN/train.py`
+   * **Part 3.2 ResNet-18:** `sbatch CNN_ResNet-18/job_resnet18.sh` (Rangpur)
    * **Part 4 VAE:** `python OASIS_VAE/train_vae.py`
